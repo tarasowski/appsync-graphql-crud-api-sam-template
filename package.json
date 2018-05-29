@@ -1,0 +1,17 @@
+{
+  "name": "test-appsync-sam",
+  "version": "1.0.0",
+  "description": "Basic AppSync CRUD API",
+  "main": "api/services/leads/get-lead.js",
+  "scripts": {
+    "test": "No testing yet",
+    "folder": "rm -rf build && mkdir build",
+    "bucket": "aws s3api create-bucket --bucket appsync-api-basic-crud-cfn --region us-east-1",
+    "package": "aws cloudformation package --template-file template.yaml --output-template-file build/output.yaml --s3-bucket appsync-api-basic-crud-cfn",
+    "deploy": "aws cloudformation deploy --template-file build/output.yaml --stack-name appsync-api-basic-crud-cfn --capabilities CAPABILITY_NAMED_IAM",
+    "qd": "npm run folder && npm run bucket && npm run package && npm run deploy"
+  },
+  "keywords": [],
+  "author": "Dimitri Tarasowski <dimitri+serverless@tarasowski.de",
+  "license": "MIT"
+}

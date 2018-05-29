@@ -1,0 +1,324 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: Simple CRUD AppSync API with SAM + Cloudformation by Dimitri Tarasowski
+
+Parameters:
+  APIName:
+    Type: String
+    Description: The name of the API
+    MinLength: 3
+    MaxLength: 20
+    Default: AppSyncApi
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]*$'
+  APIStage:
+    Type: String
+    Description: The name of the API stage
+    MinLength: 3
+    MaxLength: 20
+    Default: dev
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]*$'
+    
+
+Globals:
+  Function:
+    Runtime: nodejs8.10
+    Timeout: 10
+    MemorySize: 128
+    Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoTableLeads
+
+Resources:
+  DynamoTableLeads:
+    Type: "AWS::DynamoDB::Table"
+    Description: Data stores for AppSync Leads API
+    Properties:
+      TableName: !Sub ${APIName}-leads-table-${APIStage}
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: leadId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: leadId
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+    
+  GetLeadFunction:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Handler: api/services/leads/get-lead.handler
+      Description: This lambda function returns a leads from the database
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !GetAtt DynamoTableLeads.Arn
+  
+  SaveLeadFunction:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Handler: api/services/leads/save-lead.handler
+      Description: This lambada function saves a lead into the database
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt DynamoTableLeads.Arn  
+  
+  UpdateLeadFunction:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Handler: api/services/leads/update-lead.handler
+      Description: This lambada function updates a lead in the database
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource: !GetAtt DynamoTableLeads.Arn
+  
+  DeleteLeadFunction:
+    Type: "AWS::Serverless::Function"
+    Properties:
+      Handler: api/services/leads/delete-lead.handler
+      Description: This lambada function deletes a lead from the database
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:DeleteItem
+              Resource: !GetAtt DynamoTableLeads.Arn
+  
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${APIName}-appsync-lambda-role-${APIStage}
+      ManagedPolicyArns:
+        - Ref: AppSyncLambdaPolicy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - appsync.amazonaws.com
+    DependsOn:
+      - AppSyncLambdaPolicy
+  
+  AppSyncLambdaPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Managed policy to allow AppSync to access tables in DynamoDb
+      Path: /appsync/
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 
+              - lambda:InvokeFunction
+            Resource: 
+              - !GetAtt GetLeadFunction.Arn
+              - !GetAtt SaveLeadFunction.Arn
+              - !GetAtt UpdateLeadFunction.Arn
+              - !GetAtt DeleteLeadFunction.Arn 
+  
+  AppSyncApi:
+    Type: "AWS::AppSync::GraphQLApi"
+    Description: The GraphQL API for Leads
+    Properties:
+      AuthenticationType: API_KEY
+      Name: !Sub ${APIName}-${APIStage}
+  
+  AppSyncApiKey:
+    Type: "AWS::AppSync::ApiKey"
+    Properties:
+      Description: Api Key for AppSync Lead API
+      Expires: 1558173017
+      ApiId: !GetAtt AppSyncApi.ApiId
+  
+  AppSyncSchema:
+    Type: "AWS::AppSync::GraphQLSchema"
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      Definition: |
+        type Delete {
+          customerId: ID!
+          leadId: ID!
+        }
+
+        type Get {
+          customerId: ID!
+          leadId: ID!
+          name: String
+          email: String
+          company: String
+        }
+
+        type Mutation {
+          saveLead(
+            customerId: ID!,
+            leadId: ID!,
+            name: String!,
+            email: String!,
+            company: String!
+          ): Save
+          deleteLead(customerId: ID!, leadId: ID!): Delete
+          updateLead(
+            customerId: ID!,
+            leadId: ID!,
+            name: String!,
+            email: String!,
+            company: String!
+          ): Update
+        }
+
+        type Query {
+          getLead(customerId: ID!, leadId: ID!): Get
+        }
+
+        type Save {
+          customerId: ID!
+          leadId: ID!
+          name: String
+          email: String
+          company: String
+        }
+
+        type Update {
+          customerId: ID!
+          leadId: ID!
+          name: String
+          email: String
+          company: String
+        }
+
+        schema {
+          query: Query
+          mutation: Mutation
+        }
+
+  AppSyncLambdaGetLeadDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      Name: !Sub ${APIName}_lambda_get_leads_${APIStage} # A name starts with letter and contains only numbers, letters and "_"
+      Description: Datasource for getting lead data
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt LambdaRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt GetLeadFunction.Arn
+  
+  AppSyncLambdaSaveLeadDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      Name: !Sub ${APIName}_lambda_save_leads_${APIStage} # A name starts with letter and contains only numbers, letters and "_"
+      Description: Datasource for saving lead data
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt LambdaRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt SaveLeadFunction.Arn
+  
+  AppSyncLambdaUpdateLeadDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      Name: !Sub ${APIName}_lambda_update_leads_${APIStage} # A name starts with letter and contains only numbers, letters and "_"
+      Description: Datasource for updating lead data
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt LambdaRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt UpdateLeadFunction.Arn
+  
+  AppSyncLambdaDeleteLeadDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      Name: !Sub ${APIName}_lambda_delete_leads_${APIStage} # A name starts with letter and contains only numbers, letters and "_"
+      Description: Datasource for deleting lead data
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt LambdaRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt DeleteLeadFunction.Arn
+
+  AppSyncGetLeadResolver:
+    Type: "AWS::AppSync::Resolver"
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      TypeName: Query
+      DataSourceName: !GetAtt AppSyncLambdaGetLeadDataSource.Name
+      FieldName: getLead
+      RequestMappingTemplate: |
+        {
+          "version" : "2017-02-28",
+          "operation": "Invoke",
+          "payload": $util.toJson($context.args)
+        }
+      ResponseMappingTemplate: "$util.toJson($context.result)"
+  
+  AppSyncSaveLeadResolver:
+    Type: "AWS::AppSync::Resolver"
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      TypeName: Mutation
+      DataSourceName: !GetAtt AppSyncLambdaSaveLeadDataSource.Name
+      FieldName: saveLead
+      RequestMappingTemplate: |
+        {
+          "version" : "2017-02-28",
+          "operation": "Invoke",
+          "payload": $util.toJson($context.args)
+        }
+      ResponseMappingTemplate: "$util.toJson($context.result)"
+  
+  AppSyncUpdateLeadResolver:
+    Type: "AWS::AppSync::Resolver"
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      TypeName: Mutation
+      DataSourceName: !GetAtt AppSyncLambdaSaveLeadDataSource.Name
+      FieldName: updateLead
+      RequestMappingTemplate: |
+        {
+          "version" : "2017-02-28",
+          "operation": "Invoke",
+          "payload": $util.toJson($context.args)
+        }
+      ResponseMappingTemplate: "$util.toJson($context.result)"
+  
+  AppSyncDeleteLeadResolver:
+    Type: "AWS::AppSync::Resolver"
+    DependsOn: AppSyncSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      TypeName: Mutation
+      DataSourceName: !GetAtt AppSyncLambdaDeleteLeadDataSource.Name
+      FieldName: deleteLead
+      RequestMappingTemplate: |
+        {
+          "version" : "2017-02-28",
+          "operation": "Invoke",
+          "payload": $util.toJson($context.args)
+        }
+      ResponseMappingTemplate: "$util.toJson($context.result)"
+
+Outputs:
+  GraphQLApiEndpoint:
+    Description: Here is your GraphQL endpoint URL
+    Value: !GetAtt AppSyncApi.GraphQLUrl
